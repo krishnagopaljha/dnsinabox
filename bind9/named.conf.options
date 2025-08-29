@@ -1,0 +1,28 @@
+options {
+    directory "/var/cache/bind";
+
+    // Listen on all interfaces
+    listen-on { any; };
+    listen-on-v6 { any; };
+
+    // Enable recursion
+    recursion yes;
+
+    // Allow queries from all clients
+    allow-query { any; };
+
+    // Security settings
+    dnssec-validation auto;
+    allow-transfer { none; };
+
+    // Enable automatic trust anchor management
+    managed-keys-directory "/var/cache/bind";
+
+    // Response Policy Zone (RPZ) Configuration
+    response-policy {
+        zone "rpz.local" policy nxdomain;
+    } recursive-only no;
+};
+ statistics-channels {
+        inet 0.0.0.0 port 8053 allow { any; };
+};

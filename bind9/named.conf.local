@@ -1,0 +1,15 @@
+// RPZ blocking zone
+zone "rpz.local" {
+    type master;
+    file "/etc/bind/db.rpz.local";
+    allow-query { localhost; };
+    allow-transfer { none; };
+};
+
+// Authoritative zone for krishna.cst
+zone "krishna.cst" {
+    type master;
+    file "/etc/bind/db.krishna.cst";
+    allow-transfer { any; };
+    allow-query { any; };
+};

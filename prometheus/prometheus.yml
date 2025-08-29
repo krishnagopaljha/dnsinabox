@@ -1,0 +1,61 @@
+global:
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  evaluation_interval: 5s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [] # Add your Alertmanager target here, e.g., 'alertmanager:9093'
+      scheme: http
+      timeout: 10s
+      api_version: v2
+
+scrape_configs:
+  - job_name: 'dnsdist'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['dnsdist:8083']
+    basic_auth:
+      username: 'admin'
+      # ⚠️ IMPORTANT: Replace with your actual secure password
+      password: '<your_secure_password>'
+
+  - job_name: 'powerdns'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['powerdns:8082']
+    # 
+    # NOTE: The PowerDNS metrics endpoint uses an API key via the 'X-API-Key' header,
+    # not basic authentication. Prometheus cannot add this header directly.
+    # You have two common options:
+    #
+    # 1. (Easiest) In your pdns.conf, set `api=yes` but leave `api-key` blank.
+    #    Then, use firewall rules to ensure only the Prometheus server can access this port.
+    #
+    # 2. (Most Secure) Place a reverse proxy (like Nginx) in front of PowerDNS. 
+    #    The proxy will add the required 'X-API-Key' header to requests sent to PowerDNS.
+    #
+
+  - job_name: 'unbound'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['unbound_exporter:9167']
+
+  - job_name: 'knotdns'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ['knotdns:8453']
+
+  - job_name: 'bind_exporter'
+    static_configs:
+      - targets: ['bind_exporter:9119']
+
+  # A common job for monitoring the server host itself.
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node_exporter:9100']
