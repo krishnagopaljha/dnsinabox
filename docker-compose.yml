@@ -1,0 +1,248 @@
+services:
+  postgres:
+    image: postgres:14-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=root
+      # ⚠️ It's recommended to use a stronger password, especially outside of local testing.
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=powerdns
+    ports:
+      - "5432:5432"
+    volumes:
+      - db2:/var/lib/postgresql/data
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.124
+
+  manager:
+    build: ./src
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    volumes:
+      - ./src/:/app/
+    ports:
+      - "8001:8000"
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=powerdns
+      - DB_USER=root
+      - DB_PASSWORD=secret
+      - PDNS_HOST=powerdns
+    depends_on:
+      - postgres
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.122
+      default:
+
+  powerdns:
+    build:
+      context: .
+      dockerfile: ./powerdns/PowerDNS.Dockerfile
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/sbin/pdns_recursor-startup"]
+    container_name: powerdns
+    ports:
+      - "5301:53/udp"
+      - "5301:53/tcp"
+      # NOTE: For Prometheus to scrape this, you must enable the webserver in your PowerDNS config
+      # and expose the metrics port here (e.g., - "8081:8081").
+    environment:
+      - PDNS_API_KEY=apikey
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=powerdns
+      - POSTGRES_HOST=postgres
+      - RESOLVE_BLACKLIST=93.184.215.14
+    volumes:
+      - ./powerdns/blacklist.lua:/home/blacklist.lua:ro
+      - ./powerdns/start.py:/usr/local/sbin/pdns_recursor-startup:rw
+      - ./powerdns/.logs:/var/logs
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.12
+
+  knotdns:
+    image: cznic/knot-resolver
+    container_name: knotdns
+    command: ["-c", "/etc/knot-resolver/kresd.conf", "-n"]
+    ports:
+      - "5302:53/udp"
+      - "5302:53/tcp"
+      - "8453:8453/tcp"
+    volumes:
+      - ./knot/kresd.conf:/etc/knot-resolver/kresd.conf:ro
+      - ./knot/blocklist.rpz:/etc/knot-resolver/blocklist.rpz
+      - ./knot/root.hints:/etc/knot-resolver/root.hints
+      - ./knot/.logs:/var/logs
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.13
+
+  unbound:
+    build:
+      context: .
+      dockerfile: ./unbound/unbound.Dockerfile
+    container_name: unbound
+    hostname: unbound
+    ports:
+      - "5335:53/tcp"
+      - "5335:53/udp"
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.14
+    volumes:
+      - unbound-socket:/var/run/socket/:rw
+      - ./unbound/unbound.conf:/var/unbound/etc/unbound.conf:rw
+      - ./unbound/blocked-domains.conf:/var/unbound/etc/blocked-domains.conf:rw
+      - ./unbound/logs/:/var/logs/
+
+  unbound_exporter:
+    build: ./unbound_exporter
+    command: [ "-unbound.host=unix:///var/run/socket/unbound.ctl" ]
+    volumes:
+      - unbound-socket:/var/run/socket:ro
+    ports:
+      - "9167:9167/tcp"
+    networks:
+      dns_net:
+    depends_on:
+      unbound:
+        condition: service_started
+  
+  bind9:
+    image: ubuntu/bind9:9.18-22.04_beta
+    container_name: bind9
+    ports:
+      - "30053:53/tcp"
+      - "30053:53/udp"
+    environment:
+      - TZ=UTC
+      - BIND9_USER=bind
+    volumes:
+      - ./bind9/named.conf:/etc/bind/named.conf:ro
+      - ./bind9/named.conf.options:/etc/bind/named.conf.options:ro
+      - ./bind9/named.conf.local:/etc/bind/named.conf.local:ro
+      - ./bind9/db.rpz.local:/etc/bind/db.rpz.local:ro
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.15
+
+  bind_exporter:
+    image: prometheuscommunity/bind-exporter:v0.8.0
+    container_name: bind_exporter
+    command: 
+      - "--bind.stats-url=http://10.20.0.15:8053"
+    ports:
+      - "9119:9119"
+    networks:
+      dns_net:
+    depends_on:
+      - bind9
+
+  dnsdist:
+    build:
+      context: .
+      dockerfile: ./dnsdist/dnsdist.Dockerfile
+    container_name: dnsdist
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "8083:8083" # Web UI / statistics interface
+    # NOTE: Ensure the credentials in your dnsdist.conf match what's in prometheus.yml
+    environment:
+      - PDNS_API_KEY=apikey
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=powerdns
+      - POSTGRES_HOST=postgres
+      - RESOLVE_BLACKLIST_IPv4=93.184.215.14
+      - RESOLVE_BLACKLIST_IPv6=fe80::210:5aff:feaa:20a2
+    volumes:
+      - ./dnsdist/blacklist.lua:/home/blacklist.lua:ro
+      - ./dnsdist/dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro
+      - dnstap-socket:/var/run/dnsdist/:rw
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      - powerdns
+      - knotdns
+      - unbound
+      - bind9
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.16
+      default:
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.20
+      default:
+  
+  dnscollector:
+    image: dmachard/dnscollector
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - dnstap-socket:/var/run/dnsdist/
+      - ./dnscollector/config.yml:/etc/dnscollector/config.yml:ro
+      - ./dnscollector/.var:/var/dnscollector
+    ports:
+      - "6001:6001"
+    restart: always
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.19
+      default:
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    # This is the fix for the "permission denied" error on Docker Desktop for Windows.
+    # It runs the container as the root user, giving it write access to the volume.
+    user: '0:0'
+    ports:
+      - "9090:9090"
+    volumes:
+      # Changed path from /tmp/... to a relative path for better portability.
+      - ./prometheus-data:/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:   
+      dns_net:
+        ipv4_address: 10.20.0.17
+      default:
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana:/etc/grafana/provisioning/datasources
+      - grafana-storage:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      dns_net:
+        ipv4_address: 10.20.0.18
+      default:
+
+networks:
+  dns_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.20.0.0/16
+  hostnet:
+    external: true
+    name: host
+
+volumes:
+  grafana-storage:
+  unbound-socket:
+  dnstap-socket:
+  db2:
